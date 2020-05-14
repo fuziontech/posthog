@@ -8,6 +8,8 @@ services:
       POSTGRES_USER: posthog
       POSTGRES_DB: posthog
       POSTGRES_PASSWORD: posthog
+    ports:
+      - "5439:5432"
   redis:
     image: "redis:alpine"
     container_name: posthog_redis
