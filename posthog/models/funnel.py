@@ -103,29 +103,91 @@ class Funnel(models.Model):
         filter = Filter(data=self.filters)
         people = (
             Person.objects.all()
-            .filter(team_id=self.team_id, persondistinctid__distinct_id__isnull=False)
-            .annotate(
-                **self._annotate_steps(
-                    team_id=self.team_id,
-                    filter=filter
-                )
-            )
-            .filter(step_0__isnull=False)
-            .distinct("pk")
+            # .filter(team_id=self.team_id, persondistinctid__distinct_id__isnull=False)
+            # .annotate(
+            #     **self._annotate_steps(
+            #         team_id=self.team_id,
+            #         filter=filter
+            #     )
+            # )
+            # .filter(step_0__isnull=False)
+            # .distinct("pk")
+            .raw('''
+               with base as (
+select distinct_id, count(distinct event) steps
+from posthog_event
+-- Populate following programatically
+where 1=1 
+and team_id = 1
+group by distinct_id
+), pivot as (
+SELECT * FROM crosstab('
+select distinct_id, event, min(timestamp) first_event
+from posthog_event
+-- Populate following programatically
+where 1=1 
+and team_id = 1
+group by distinct_id, event
+order by distinct_id, event
+') AS ct(
+	  distinct_id varchar
+	, "step-0" timestamptz
+	, "step-1" timestamptz
+	, "step-2" timestamptz
+	, "step-3" timestamptz
+	, "step-4" timestamptz
+	, "step-5" timestamptz
+	, "step-6" timestamptz
+	, "step-7" timestamptz
+	, "step-8" timestamptz
+	, "step-9" timestamptz))
+
+SELECT "posthog_person"."id",
+       "posthog_person"."is_user_id",
+       b.steps,
+       pivot."step-0" as step_0,
+       pivot."step-1" as step_1,
+       pivot."step-2" as step_2,
+       pivot."step-3" as step_3,
+       pivot."step-4" as step_4,
+       pivot."step-5" as step_5,
+       pivot."step-6" as step_6,
+       pivot."step-7" as step_7,
+       pivot."step-8" as step_8,
+       pivot."step-9" as step_9
+from pivot
+join posthog_persondistinctid pdi on pivot.distinct_id = pdi.distinct_id
+join posthog_person on posthog_person.id = pdi.id
+join base b on b.distinct_id = pivot.distinct_id;
+            ''')
         )
+
+        # TODO: problem is with the lazy eval of query
+        # and django ORM being really slow to deserialize
+        start = datetime.datetime.now()
+        people_step_count = {
+            person.id: person.steps for person in people
+        }
+        duration = datetime.datetime.now() - start
+        print("~~~~~~~~", duration, "~~~~~~~~~")
 
         steps = []
         for index, funnel_step in enumerate(filter.entities):
+            start = datetime.datetime.now()
             relevant_people = [
                 person.id
                 for person in people
-                if getattr(person, "step_{}".format(index))
+                if index < person.steps
             ]
             steps.append(self._serialize_step(funnel_step, relevant_people))
+            duration = datetime.datetime.now() - start
+            print("~~~~~~~~", funnel_step.id, "---", duration, "~~~~~~~~~")
 
         if len(steps) > 0:
             for index, _ in enumerate(steps):
-                steps[index]["people"] = self._order_people_in_step(
-                    steps, steps[index]["people"]
-                )[0:100]
+                start = datetime.datetime.now()
+                steps[index]["people"] = sorted(steps[index]["people"], key=lambda p: people_step_count[p], reverse=True)[0:100]
+                duration = datetime.datetime.now() - start
+                print("~~~~~~~~", index, "---", duration, "~~~~~~~~~")
         return steps
+
