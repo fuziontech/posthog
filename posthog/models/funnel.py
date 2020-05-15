@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.postgres.fields import JSONField, ArrayField
-
+from django.db import connection
 from django.db.models import (
     Exists,
     OuterRef,
@@ -101,72 +101,60 @@ class Funnel(models.Model):
 
     def get_steps(self) -> List[Dict[str, Any]]:
         filter = Filter(data=self.filters)
-        people = (
-            Person.objects.all()
-            # .filter(team_id=self.team_id, persondistinctid__distinct_id__isnull=False)
-            # .annotate(
-            #     **self._annotate_steps(
-            #         team_id=self.team_id,
-            #         filter=filter
-            #     )
-            # )
-            # .filter(step_0__isnull=False)
-            # .distinct("pk")
-            .raw('''
+        with connection.cursor() as cursor:
+            cursor.execute('''
                with base as (
-select distinct_id, count(distinct event) steps
-from posthog_event
--- Populate following programatically
-where 1=1 
-and team_id = 1
-group by distinct_id
-), pivot as (
-SELECT * FROM crosstab('
-select distinct_id, event, min(timestamp) first_event
-from posthog_event
--- Populate following programatically
-where 1=1 
-and team_id = 1
-group by distinct_id, event
-order by distinct_id, event
-') AS ct(
-	  distinct_id varchar
-	, "step-0" timestamptz
-	, "step-1" timestamptz
-	, "step-2" timestamptz
-	, "step-3" timestamptz
-	, "step-4" timestamptz
-	, "step-5" timestamptz
-	, "step-6" timestamptz
-	, "step-7" timestamptz
-	, "step-8" timestamptz
-	, "step-9" timestamptz))
+                select distinct_id, count(distinct event) steps
+                from posthog_event
+                -- Populate following programatically
+                where 1=1 
+                and team_id = 1
+                group by distinct_id
+                ), pivot as (
+                SELECT * FROM crosstab('
+                select distinct_id, event, min(timestamp) first_event
+                from posthog_event
+                -- Populate following programatically
+                where 1=1 
+                and team_id = 1
+                group by distinct_id, event
+                order by distinct_id, event
+                ') AS ct(
+                      distinct_id varchar
+                    , "step-0" timestamptz
+                    , "step-1" timestamptz
+                    , "step-2" timestamptz
+                    , "step-3" timestamptz
+                    , "step-4" timestamptz
+                    , "step-5" timestamptz
+                    , "step-6" timestamptz
+                    , "step-7" timestamptz
+                    , "step-8" timestamptz
+                    , "step-9" timestamptz))
 
-SELECT "posthog_person"."id",
-       "posthog_person"."is_user_id",
-       b.steps,
-       pivot."step-0" as step_0,
-       pivot."step-1" as step_1,
-       pivot."step-2" as step_2,
-       pivot."step-3" as step_3,
-       pivot."step-4" as step_4,
-       pivot."step-5" as step_5,
-       pivot."step-6" as step_6,
-       pivot."step-7" as step_7,
-       pivot."step-8" as step_8,
-       pivot."step-9" as step_9
-from pivot
-join posthog_persondistinctid pdi on pivot.distinct_id = pdi.distinct_id
-join posthog_person on posthog_person.id = pdi.id
-join base b on b.distinct_id = pivot.distinct_id;
+                SELECT "posthog_person"."id",
+                       "posthog_person"."is_user_id",
+                       b.steps,
+                       pivot."step-0" as step_0,
+                       pivot."step-1" as step_1,
+                       pivot."step-2" as step_2,
+                       pivot."step-3" as step_3,
+                       pivot."step-4" as step_4,
+                       pivot."step-5" as step_5,
+                       pivot."step-6" as step_6,
+                       pivot."step-7" as step_7,
+                       pivot."step-8" as step_8,
+                       pivot."step-9" as step_9
+                from pivot
+                join posthog_persondistinctid pdi on pivot.distinct_id = pdi.distinct_id
+                join posthog_person on posthog_person.id = pdi.id
+                join base b on b.distinct_id = pivot.distinct_id;
             ''')
-        )
+            rows = cursor.fetchall()
 
-        # TODO: problem is with the lazy eval of query
-        # and django ORM being really slow to deserialize
         start = datetime.datetime.now()
         people_step_count = {
-            person.id: person.steps for person in people
+            person[0]: person[2] for person in rows
         }
         duration = datetime.datetime.now() - start
         print("~~~~~~~~", duration, "~~~~~~~~~")
@@ -175,9 +163,9 @@ join base b on b.distinct_id = pivot.distinct_id;
         for index, funnel_step in enumerate(filter.entities):
             start = datetime.datetime.now()
             relevant_people = [
-                person.id
-                for person in people
-                if index < person.steps
+                person[0]
+                for person in rows
+                if index < person[2]
             ]
             steps.append(self._serialize_step(funnel_step, relevant_people))
             duration = datetime.datetime.now() - start
